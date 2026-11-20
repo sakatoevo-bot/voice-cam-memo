@@ -25,7 +25,6 @@
       overflow: hidden;
     }
 
-    /* ヘッダー */
     header {
       display: flex;
       align-items: center;
@@ -71,11 +70,9 @@
     .btn-green { background: var(--accent-green); color: #020617; font-weight: bold; border: none; }
     .btn-danger { background: var(--danger); color: #fff; font-weight: bold; border: none; }
 
-    /* 画面切り替え */
     .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
     .view.active { display: flex; }
 
-    /* カメラエリア（上部） */
     .camera-box {
       position: relative;
       height: 52%;
@@ -114,7 +111,6 @@
     }
     .flash.show { opacity: 0.85; }
 
-    /* 音声ログエリア（下部） */
     .log-box {
       flex: 1;
       display: flex;
@@ -179,7 +175,6 @@
       margin-right: 6px;
     }
 
-    /* フッター */
     footer {
       display: flex;
       gap: 8px;
@@ -194,7 +189,6 @@
       font-size: 14px;
     }
 
-    /* 確認・マニュアル画面 */
     .review-toolbar {
       display: flex;
       gap: 6px;
@@ -257,7 +251,6 @@
 </head>
 <body>
 
-  <!-- ヘッダー -->
   <header>
     <div class="status-badge">
       <span id="recDot" class="dot"></span>
@@ -271,7 +264,6 @@
     <button id="toggleViewBtn" class="btn-primary">確認・作成へ</button>
   </header>
 
-  <!-- 1. 収録画面 -->
   <main id="captureView" class="view active">
     <div class="camera-box">
       <video id="video" autoplay playsinline muted></video>
@@ -298,11 +290,11 @@
     </footer>
   </main>
 
-  <!-- 2. 確認・マニュアル作成画面 -->
   <main id="reviewView" class="view">
     <div class="review-toolbar">
-      <button id="copyMdBtn" class="btn-primary">📋 Markdownコピー</button>
-      <button id="downloadJsonBtn">💾 JSON保存</button>
+      <button id="copyRichBtn" class="btn-green">📄 ドキュメント用コピー</button>
+      <button id="downloadHtmlBtn" class="btn-primary">🌐 HTML保存</button>
+      <button id="copyMdBtn">📋 テキストのみ</button>
       <button id="clearAllBtn" class="btn-danger">🗑️ 全消去</button>
     </div>
     <div id="reviewList" class="review-list"></div>
@@ -311,11 +303,10 @@
   <canvas id="canvas" style="display:none;"></canvas>
 
   <script>
-    // --- 状態管理 ---
     let isRecording = false;
     let recognition = null;
     let stream = null;
-    let entries = []; // { id, type: 'photo'|'text', time, image?, text? }
+    let entries = [];
     let photoCount = 0;
     let lastTriggerAt = 0;
     let interimEl = null;
@@ -337,7 +328,6 @@
     const triggerWordsInput = document.getElementById('triggerWords');
     const moodPreset = document.getElementById('moodPreset');
 
-    // --- 気分・現場プリセット切替 ---
     moodPreset.addEventListener('change', () => {
       const v = moodPreset.value;
       if (v === 'quick') {
@@ -349,17 +339,15 @@
       }
     });
 
-    // --- 時刻フォーマット ---
     function nowStr() {
       return new Date().toLocaleTimeString('ja-JP', { hour12: false });
     }
 
-    // --- カメラ初期化 ---
     async function initCamera() {
       if (stream) return;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 960 } },
           audio: false
         });
         video.srcObject = stream;
@@ -368,23 +356,23 @@
       }
     }
 
-    // --- 写真撮影処理 ---
     function takePhoto(reason = '音声') {
       if (!video.videoWidth) return;
       const now = Date.now();
-      if (now - lastTriggerAt < 1500) return; // 連続誤爆防止(1.5秒)
+      if (now - lastTriggerAt < 1500) return;
       lastTriggerAt = now;
 
-      // フラッシュ演出
       flash.classList.add('show');
       setTimeout(() => flash.classList.remove('show'), 150);
 
-      // キャプチャ
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // リッチコピー時の容量を抑えるため最大幅640px程度でJPEG化
+      const maxW = 640;
+      const scale = Math.min(1, maxW / video.videoWidth);
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
 
       photoCount++;
       const t = nowStr();
@@ -394,14 +382,12 @@
 
       photoCountPill.textContent = `📷 ${photoCount}枚`;
 
-      // ストリーム画面にカメラマーカー追加
       const div = document.createElement('div');
       div.className = 'log-item photo-marker';
       div.innerHTML = `<span>📷 写真 #${photoCount} を撮影（${reason}）</span><span class="time">${t}</span>`;
       insertLogElement(div);
     }
 
-    // --- ストリームログ挿入 ---
     function insertLogElement(el) {
       if (interimEl && interimEl.parentNode === streamList) {
         streamList.insertBefore(el, interimEl);
@@ -424,7 +410,6 @@
       insertLogElement(div);
     }
 
-    // --- 音声認識 (iOS Safari対応・自動再起動付き) ---
     function setupSpeech() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
@@ -454,7 +439,6 @@
             handleRecognizedPhrase(transcript);
           } else {
             interimTranscript += transcript;
-            // 仮認識中でもトリガーワードが含まれたら即反応させる場合
             checkTriggerQuick(transcript);
           }
         }
@@ -476,7 +460,6 @@
         }
       };
 
-      // iOS Safariは一定時間や無音で自動終了するため、収録中なら即再開
       rec.onend = () => {
         if (isRecording) {
           try {
@@ -515,7 +498,6 @@
       for (const word of triggers) {
         if (cleanedText.includes(word)) {
           triggered = true;
-          // 単独トリガー発話の場合はテキストから除去、文中の場合は残す
           if (cleanedText.trim() === word) {
             cleanedText = '';
           }
@@ -530,7 +512,6 @@
       }
     }
 
-    // --- 収録開始 / 停止 ---
     startStopBtn.addEventListener('click', async () => {
       if (!isRecording) {
         await initCamera();
@@ -558,7 +539,6 @@
       takePhoto('手動');
     });
 
-    // --- 画面切替（収録 ⇔ 確認・マニュアル作成） ---
     toggleViewBtn.addEventListener('click', () => {
       const isCapture = captureView.classList.contains('active');
       if (isCapture) {
@@ -573,10 +553,9 @@
       }
     });
 
-    // --- 時系列ブロック化＆確認画面描画 ---
     function buildManualBlocks() {
       const blocks = [];
-      let currentBlock = { title: '導入メモ（撮影前）', time: '', image: null, texts: [], entryIds: [] };
+      let currentBlock = { title: '導入メモ（撮影前）', time: '', image: null, texts: [] };
 
       for (const item of entries) {
         if (item.type === 'photo') {
@@ -587,12 +566,10 @@
             title: `ステップ ${item.num}`,
             time: item.time,
             image: item.image,
-            texts: [],
-            entryIds: [item.id]
+            texts: []
           };
         } else if (item.type === 'text') {
           currentBlock.texts.push(item.text);
-          currentBlock.entryIds.push(item.id);
         }
       }
       if (currentBlock.image || currentBlock.texts.length > 0) {
@@ -625,7 +602,57 @@
       });
     }
 
-    // --- Markdownコピー ---
+    function buildHtmlDocument() {
+      const blocks = buildManualBlocks();
+      const textareas = reviewList.querySelectorAll('textarea');
+      const dateStr = new Date().toLocaleDateString('ja-JP');
+
+      let bodyHtml = `<h1>作業記録・マニュアル (${escapeHtml(dateStr)})</h1>`;
+      blocks.forEach((b, idx) => {
+        const comment = (textareas[idx] ? textareas[idx].value.trim() : b.texts.join('\n')) || '（コメントなし）';
+        bodyHtml += `<h2>${escapeHtml(b.title)} ${b.time ? `[${escapeHtml(b.time)}]` : ''}</h2>`;
+        if (b.image) {
+          bodyHtml += `<p><img src="${b.image}" style="max-width:480px;width:100%;height:auto;" /></p>`;
+        }
+        bodyHtml += `<p>${escapeHtml(comment).replace(/\n/g, '<br>')}</p><hr/>`;
+      });
+      return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${bodyHtml}</body></html>`;
+    }
+
+    // --- ドキュメント用コピー（画像＋文字をHTML形式でクリップボードへ） ---
+    document.getElementById('copyRichBtn').addEventListener('click', async () => {
+      const html = buildHtmlDocument();
+      const plain = html.replace(/<[^>]+>/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+      try {
+        if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+          const item = new ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([plain], { type: 'text/plain' })
+          });
+          await navigator.clipboard.write([item]);
+          alert('写真とコメントをまとめてコピーしました！Googleドキュメントで「貼り付け」を押してください。');
+          return;
+        }
+      } catch (e) {
+        console.warn('リッチコピー非対応のためHTML保存へフォールバック:', e);
+      }
+      alert('お使いのブラウザは直接の画像コピーに制限があるため、「🌐 HTML保存」を押してファイルを開きコピーしてください。');
+    });
+
+    // --- HTML保存（写真＋コメントが入ったWebページファイルとして保存） ---
+    document.getElementById('downloadHtmlBtn').addEventListener('click', () => {
+      const html = buildHtmlDocument();
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `manual-${Date.now()}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // --- テキストのみコピー ---
     document.getElementById('copyMdBtn').addEventListener('click', async () => {
       const blocks = buildManualBlocks();
       const textareas = reviewList.querySelectorAll('textarea');
@@ -639,32 +666,9 @@
       });
 
       await navigator.clipboard.writeText(md);
-      alert('時系列マニュアルをクリップボードにコピーしました！');
+      alert('テキストのみをクリップボードにコピーしました！');
     });
 
-    // --- JSON保存（後の構造化データ用） ---
-    document.getElementById('downloadJsonBtn').addEventListener('click', () => {
-      const blocks = buildManualBlocks();
-      const textareas = reviewList.querySelectorAll('textarea');
-      const payload = blocks.map((b, idx) => ({
-        step: idx + 1,
-        title: b.title,
-        timestamp: b.time,
-        comment: textareas[idx] ? textareas[idx].value.trim() : b.texts.join('\n'),
-        hasImage: Boolean(b.image),
-        imageBase64: b.image || null
-      }));
-
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `field-log-${Date.now()}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
-
-    // --- 全消去 ---
     document.getElementById('clearAllBtn').addEventListener('click', () => {
       if (!confirm('記録した写真と音声ログをすべて消去しますか？')) return;
       entries = [];
@@ -675,7 +679,6 @@
       renderReview();
     });
 
-    // --- ローカル一時保存 ---
     function saveLocal() {
       try {
         localStorage.setItem('voice_cam_proto_v1', JSON.stringify({ entries, photoCount }));
