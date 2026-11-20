@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>ハンズフリー撮影＆音声ログ（試作版）</title>
+  <title>ハンズフリー撮影＆音声ログ（試作版 v3）</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -92,10 +92,12 @@
       right: 8px;
       display: flex;
       justify-content: space-between;
+      gap: 6px;
       pointer-events: none;
+      flex-wrap: wrap;
     }
     .pill {
-      background: rgba(2, 6, 23, 0.75);
+      background: rgba(2, 6, 23, 0.78);
       padding: 4px 10px;
       border-radius: 999px;
       font-size: 12px;
@@ -275,6 +277,7 @@
       <video id="video" autoplay playsinline muted></video>
       <div class="camera-overlay">
         <span class="pill" id="photoCountPill">📷 0枚</span>
+        <span class="pill" id="cooldownPill">🟢 撮影待機</span>
         <span class="pill" id="speechStatePill">🎤 マイク停止中</span>
       </div>
       <div id="flash" class="flash"></div>
@@ -286,7 +289,7 @@
         <input id="triggerWords" type="text" value="シャッター,写真撮影,次へ" />
       </div>
       <div id="streamList" class="stream-list">
-        <div class="log-item">下の「収録スタート」を押すと、カメラと音声認識が同時に動き出します。</div>
+        <div class="log-item">v3適用済み：1回撮影すると8秒間は連続撮影をロックします。</div>
       </div>
     </div>
 
@@ -314,9 +317,10 @@
     let entries = [];
     let photoCount = 0;
     let lastTriggerAt = 0;
+    let isCapturingLock = false;
     let interimEl = null;
 
-    const COOLDOWN_MS = 4000; // 連続誤爆防止（4秒）
+    const COOLDOWN_MS = 8000; // 8秒間は2枚目以降を完全ブロック
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -331,9 +335,19 @@
     const recDot = document.getElementById('recDot');
     const statusText = document.getElementById('statusText');
     const photoCountPill = document.getElementById('photoCountPill');
+    const cooldownPill = document.getElementById('cooldownPill');
     const speechStatePill = document.getElementById('speechStatePill');
     const triggerWordsInput = document.getElementById('triggerWords');
     const moodPreset = document.getElementById('moodPreset');
+
+    setInterval(() => {
+      const remain = Math.ceil((lastTriggerAt + COOLDOWN_MS - Date.now()) / 1000);
+      if (remain > 0) {
+        cooldownPill.textContent = `🔒 ${remain}秒待機`;
+      } else {
+        cooldownPill.textContent = `🟢 撮影待機`;
+      }
+    }, 500);
 
     moodPreset.addEventListener('change', () => {
       const v = moodPreset.value;
@@ -364,10 +378,15 @@
     }
 
     function takePhoto(reason = '音声') {
-      if (!video.videoWidth) return;
       const now = Date.now();
+      if (isCapturingLock) return;
       if (now - lastTriggerAt < COOLDOWN_MS) return;
+      if (!video.videoWidth) return;
+
+      // 最初にロックとタイムスタンプを確定して二重呼び出しを防ぐ
+      isCapturingLock = true;
       lastTriggerAt = now;
+      setTimeout(() => { isCapturingLock = false; }, 1000);
 
       flash.classList.add('show');
       setTimeout(() => flash.classList.remove('show'), 150);
@@ -387,6 +406,7 @@
       saveLocal();
 
       photoCountPill.textContent = `📷 ${photoCount}枚`;
+      cooldownPill.textContent = `🔒 8秒待機`;
 
       const div = document.createElement('div');
       div.className = 'log-item photo-marker';
