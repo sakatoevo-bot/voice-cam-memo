@@ -75,7 +75,7 @@
 
     .camera-box {
       position: relative;
-      height: 52%;
+      height: 50%;
       background: #000;
       overflow: hidden;
       flex-shrink: 0;
@@ -161,6 +161,7 @@
       font-weight: bold;
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 8px;
     }
     .log-item.interim {
@@ -172,7 +173,7 @@
     .time {
       font-size: 11px;
       color: var(--muted);
-      margin-right: 6px;
+      flex-shrink: 0;
     }
 
     footer {
@@ -222,6 +223,11 @@
       color: var(--accent);
       font-weight: bold;
     }
+    .card-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
     .card img {
       width: 100%;
       max-height: 260px;
@@ -257,9 +263,9 @@
       <span id="statusText">待機中</span>
     </div>
     <select id="moodPreset" title="現場モード切替">
-      <option value="quick">⚡ テンポ重視（短い合図）</option>
-      <option value="standard" selected>🌿 標準モード（バランス）</option>
-      <option value="strict">🛡️ 誤爆防止（明確ワード）</option>
+      <option value="quick">⚡ テンポ重視</option>
+      <option value="standard" selected>🌿 標準モード</option>
+      <option value="strict">🛡️ 誤爆防止</option>
     </select>
     <button id="toggleViewBtn" class="btn-primary">確認・作成へ</button>
   </header>
@@ -277,7 +283,7 @@
     <div class="log-box">
       <div class="trigger-bar">
         <span>撮影ワード(カンマ区切り):</span>
-        <input id="triggerWords" type="text" value="写真,撮る,シャッター,続けて" />
+        <input id="triggerWords" type="text" value="シャッター,写真撮影,次へ" />
       </div>
       <div id="streamList" class="stream-list">
         <div class="log-item">下の「収録スタート」を押すと、カメラと音声認識が同時に動き出します。</div>
@@ -292,9 +298,8 @@
 
   <main id="reviewView" class="view">
     <div class="review-toolbar">
-      <button id="copyRichBtn" class="btn-green">📄 ドキュメント用コピー</button>
-      <button id="downloadHtmlBtn" class="btn-primary">🌐 HTML保存</button>
-      <button id="copyMdBtn">📋 テキストのみ</button>
+      <button id="copyMdBtn" class="btn-primary">📋 テキストコピー</button>
+      <button id="downloadHtmlBtn" class="btn-green">🌐 HTML保存</button>
       <button id="clearAllBtn" class="btn-danger">🗑️ 全消去</button>
     </div>
     <div id="reviewList" class="review-list"></div>
@@ -310,6 +315,8 @@
     let photoCount = 0;
     let lastTriggerAt = 0;
     let interimEl = null;
+
+    const COOLDOWN_MS = 4000; // 連続誤爆防止（4秒）
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -331,9 +338,9 @@
     moodPreset.addEventListener('change', () => {
       const v = moodPreset.value;
       if (v === 'quick') {
-        triggerWordsInput.value = 'し,はい,次,撮る,写真';
+        triggerWordsInput.value = '撮る,次,写真';
       } else if (v === 'standard') {
-        triggerWordsInput.value = '写真,撮る,シャッター,続けて';
+        triggerWordsInput.value = 'シャッター,写真撮影,次へ';
       } else if (v === 'strict') {
         triggerWordsInput.value = 'シャッターチャンス,写真撮影,次の工程';
       }
@@ -359,20 +366,19 @@
     function takePhoto(reason = '音声') {
       if (!video.videoWidth) return;
       const now = Date.now();
-      if (now - lastTriggerAt < 1500) return;
+      if (now - lastTriggerAt < COOLDOWN_MS) return;
       lastTriggerAt = now;
 
       flash.classList.add('show');
       setTimeout(() => flash.classList.remove('show'), 150);
 
-      // リッチコピー時の容量を抑えるため最大幅640px程度でJPEG化
-      const maxW = 640;
+      const maxW = 800;
       const scale = Math.min(1, maxW / video.videoWidth);
       canvas.width = Math.round(video.videoWidth * scale);
       canvas.height = Math.round(video.videoHeight * scale);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
 
       photoCount++;
       const t = nowStr();
@@ -384,7 +390,7 @@
 
       const div = document.createElement('div');
       div.className = 'log-item photo-marker';
-      div.innerHTML = `<span>📷 写真 #${photoCount} を撮影（${reason}）</span><span class="time">${t}</span>`;
+      div.innerHTML = `<span>📷 写真 #${photoCount}（${reason}）</span><span class="time">${t}</span>`;
       insertLogElement(div);
     }
 
@@ -436,10 +442,9 @@
               interimEl.remove();
               interimEl = null;
             }
-            handleRecognizedPhrase(transcript);
+            handleFinalPhrase(transcript);
           } else {
             interimTranscript += transcript;
-            checkTriggerQuick(transcript);
           }
         }
 
@@ -480,34 +485,23 @@
         .filter(Boolean);
     }
 
-    function checkTriggerQuick(text) {
+    function handleFinalPhrase(text) {
       const triggers = getTriggerList();
+      let matchedWord = null;
+
       for (const word of triggers) {
-        if (word.length >= 2 && text.endsWith(word)) {
-          takePhoto(`音声:「${word}」`);
+        if (text.includes(word)) {
+          matchedWord = word;
           break;
         }
       }
-    }
 
-    function handleRecognizedPhrase(text) {
-      const triggers = getTriggerList();
-      let triggered = false;
-      let cleanedText = text;
-
-      for (const word of triggers) {
-        if (cleanedText.includes(word)) {
-          triggered = true;
-          if (cleanedText.trim() === word) {
-            cleanedText = '';
-          }
-        }
+      if (matchedWord) {
+        takePhoto(`「${matchedWord}」`);
       }
 
-      if (triggered) {
-        takePhoto('音声トリガー');
-      }
-      if (cleanedText.trim()) {
+      const cleanedText = text.trim();
+      if (cleanedText) {
         appendTextLog(cleanedText);
       }
     }
@@ -590,17 +584,33 @@
       blocks.forEach((b, idx) => {
         const card = document.createElement('div');
         card.className = 'card';
+        const imgHtml = b.image
+          ? `<img src="${b.image}" alt="${escapeHtml(b.title)}" />
+             <div class="card-actions">
+               <button type="button" onclick="downloadSinglePhoto(${idx})">📥 この写真を保存</button>
+             </div>`
+          : '';
         card.innerHTML = `
           <div class="card-header">
             <span>${escapeHtml(b.title)} ${b.time ? `(${b.time})` : ''}</span>
             <span>#${idx + 1}</span>
           </div>
-          ${b.image ? `<img src="${b.image}" alt="${escapeHtml(b.title)}" />` : ''}
+          ${imgHtml}
           <textarea data-block="${idx}" placeholder="音声コメントがここに入ります（手修正も可能）">${escapeHtml(b.texts.join('\n'))}</textarea>
         `;
         reviewList.appendChild(card);
       });
     }
+
+    window.downloadSinglePhoto = function(blockIndex) {
+      const blocks = buildManualBlocks();
+      const b = blocks[blockIndex];
+      if (!b || !b.image) return;
+      const a = document.createElement('a');
+      a.href = b.image;
+      a.download = `step-${blockIndex + 1}-${Date.now()}.jpg`;
+      a.click();
+    };
 
     function buildHtmlDocument() {
       const blocks = buildManualBlocks();
@@ -619,28 +629,6 @@
       return `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${bodyHtml}</body></html>`;
     }
 
-    // --- ドキュメント用コピー（画像＋文字をHTML形式でクリップボードへ） ---
-    document.getElementById('copyRichBtn').addEventListener('click', async () => {
-      const html = buildHtmlDocument();
-      const plain = html.replace(/<[^>]+>/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-
-      try {
-        if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
-          const item = new ClipboardItem({
-            'text/html': new Blob([html], { type: 'text/html' }),
-            'text/plain': new Blob([plain], { type: 'text/plain' })
-          });
-          await navigator.clipboard.write([item]);
-          alert('写真とコメントをまとめてコピーしました！Googleドキュメントで「貼り付け」を押してください。');
-          return;
-        }
-      } catch (e) {
-        console.warn('リッチコピー非対応のためHTML保存へフォールバック:', e);
-      }
-      alert('お使いのブラウザは直接の画像コピーに制限があるため、「🌐 HTML保存」を押してファイルを開きコピーしてください。');
-    });
-
-    // --- HTML保存（写真＋コメントが入ったWebページファイルとして保存） ---
     document.getElementById('downloadHtmlBtn').addEventListener('click', () => {
       const html = buildHtmlDocument();
       const blob = new Blob([html], { type: 'text/html' });
@@ -652,7 +640,6 @@
       URL.revokeObjectURL(url);
     });
 
-    // --- テキストのみコピー ---
     document.getElementById('copyMdBtn').addEventListener('click', async () => {
       const blocks = buildManualBlocks();
       const textareas = reviewList.querySelectorAll('textarea');
@@ -661,12 +648,12 @@
       blocks.forEach((b, idx) => {
         const editedText = textareas[idx] ? textareas[idx].value.trim() : b.texts.join('\n');
         md += `## ${b.title} ${b.time ? `[${b.time}]` : ''}\n`;
-        if (b.image) md += `[写真データあり]\n`;
+        if (b.image) md += `[写真あり]\n`;
         md += `${editedText || '（コメントなし）'}\n\n`;
       });
 
       await navigator.clipboard.writeText(md);
-      alert('テキストのみをクリップボードにコピーしました！');
+      alert('テキストをクリップボードにコピーしました！');
     });
 
     document.getElementById('clearAllBtn').addEventListener('click', () => {
@@ -702,7 +689,7 @@
             const div = document.createElement('div');
             if (item.type === 'photo') {
               div.className = 'log-item photo-marker';
-              div.innerHTML = `<span>📷 写真 #${item.num} を撮影</span><span class="time">${item.time}</span>`;
+              div.innerHTML = `<span>📷 写真 #${item.num}</span><span class="time">${item.time}</span>`;
             } else {
               div.className = 'log-item';
               div.innerHTML = `<span class="time">${item.time}</span>${escapeHtml(item.text)}`;
