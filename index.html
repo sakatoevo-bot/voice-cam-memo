@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>ハンズフリー撮影＆音声ログ（試作版 v3）</title>
+  <title>ハンズフリー撮影＆音声ログ（試作版 v4）</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -138,7 +138,7 @@
       border-radius: 6px;
       padding: 3px 6px;
       font-size: 12px;
-      width: 165px;
+      width: 140px;
     }
     .stream-list {
       flex: 1;
@@ -150,10 +150,10 @@
     }
     .log-item {
       font-size: 14px;
-      line-height: 1.45;
-      padding: 6px 10px;
+      line-height: 1.55;
+      padding: 8px 10px;
       border-radius: 8px;
-      background: rgba(30, 41, 59, 0.7);
+      background: rgba(30, 41, 59, 0.75);
       word-break: break-word;
     }
     .log-item.photo-marker {
@@ -239,14 +239,14 @@
     }
     .card textarea {
       width: 100%;
-      min-height: 68px;
+      min-height: 84px;
       background: #0f172a;
       color: var(--text);
       border: 1px solid #475569;
       border-radius: 8px;
       padding: 8px;
       font-size: 14px;
-      line-height: 1.5;
+      line-height: 1.6;
       resize: vertical;
     }
     .empty-msg {
@@ -266,7 +266,7 @@
     </div>
     <select id="moodPreset" title="現場モード切替">
       <option value="quick">⚡ テンポ重視</option>
-      <option value="standard" selected>🌿 標準モード</option>
+      <option value="standard" selected>🌿 カシャッ撮影</option>
       <option value="strict">🛡️ 誤爆防止</option>
     </select>
     <button id="toggleViewBtn" class="btn-primary">確認・作成へ</button>
@@ -285,11 +285,11 @@
 
     <div class="log-box">
       <div class="trigger-bar">
-        <span>撮影ワード(カンマ区切り):</span>
-        <input id="triggerWords" type="text" value="シャッター,写真撮影,次へ" />
+        <span>撮影合図(カンマ区切り):</span>
+        <input id="triggerWords" type="text" value="カシャッ,かしゃっ" />
       </div>
       <div id="streamList" class="stream-list">
-        <div class="log-item">v3適用済み：1回撮影すると8秒間は連続撮影をロックします。</div>
+        <div class="log-item">v4適用済み：「カシャッ」で撮影（合図文字は非表示）／写真と写真の間はひとまとまり／待機4秒。</div>
       </div>
     </div>
 
@@ -314,13 +314,13 @@
     let isRecording = false;
     let recognition = null;
     let stream = null;
-    let entries = [];
+    let entries = []; // { id, type: 'photo'|'segment_text', num?, time, text? }
     let photoCount = 0;
     let lastTriggerAt = 0;
     let isCapturingLock = false;
     let interimEl = null;
 
-    const COOLDOWN_MS = 8000; // 8秒間は2枚目以降を完全ブロック
+    const COOLDOWN_MS = 4000; // 4秒クールタイム
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -352,11 +352,11 @@
     moodPreset.addEventListener('change', () => {
       const v = moodPreset.value;
       if (v === 'quick') {
-        triggerWordsInput.value = '撮る,次,写真';
+        triggerWordsInput.value = 'カシャッ,かしゃっ,カシャ';
       } else if (v === 'standard') {
-        triggerWordsInput.value = 'シャッター,写真撮影,次へ';
+        triggerWordsInput.value = 'カシャッ,かしゃっ';
       } else if (v === 'strict') {
-        triggerWordsInput.value = 'シャッターチャンス,写真撮影,次の工程';
+        triggerWordsInput.value = 'カシャッ';
       }
     });
 
@@ -377,16 +377,61 @@
       }
     }
 
-    function takePhoto(reason = '音声') {
+    // 現在の区間（直前の写真〜次の写真まで）のテキストエントリを取得または作成
+    function getOrCreateCurrentSegmentEntry(timeStr) {
+      const last = entries[entries.length - 1];
+      if (last && last.type === 'segment_text') {
+        return { entry: last, isNew: false };
+      }
+      const newEntry = {
+        id: Date.now() + Math.random(),
+        type: 'segment_text',
+        time: timeStr,
+        text: ''
+      };
+      entries.push(newEntry);
+      return { entry: newEntry, isNew: true };
+    }
+
+    function appendContinuousText(spokenChunk) {
+      const cleaned = stripTriggerWords(spokenChunk).trim();
+      if (!cleaned) return;
+
+      const t = nowStr();
+      const { entry, isNew } = getOrCreateCurrentSegmentEntry(t);
+
+      // 途切れ途切れになるのを防ぎ、写真と写真の間はひとまとまりの文章として連結
+      if (!entry.text) {
+        entry.text = cleaned;
+      } else {
+        const endsWithPunct = /[。、！？\s]$/.test(entry.text);
+        entry.text += (endsWithPunct ? '' : '、') + cleaned;
+      }
+
+      saveLocal();
+      renderStreamList();
+    }
+
+    function stripTriggerWords(text) {
+      const triggers = getTriggerList();
+      let result = text;
+      for (const word of triggers) {
+        if (!word) continue;
+        const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        result = result.replace(new RegExp(escaped, 'g'), '');
+      }
+      return result;
+    }
+
+    function takePhoto(reason = 'カシャッ') {
       const now = Date.now();
       if (isCapturingLock) return;
       if (now - lastTriggerAt < COOLDOWN_MS) return;
       if (!video.videoWidth) return;
 
-      // 最初にロックとタイムスタンプを確定して二重呼び出しを防ぐ
       isCapturingLock = true;
       lastTriggerAt = now;
-      setTimeout(() => { isCapturingLock = false; }, 1000);
+      setTimeout(() => { isCapturingLock = false; }, 800);
 
       flash.classList.add('show');
       setTimeout(() => flash.classList.remove('show'), 150);
@@ -401,39 +446,40 @@
 
       photoCount++;
       const t = nowStr();
-      const entry = { id: now, type: 'photo', num: photoCount, time: t, image: dataUrl };
-      entries.push(entry);
+      entries.push({ id: now, type: 'photo', num: photoCount, time: t, image: dataUrl });
       saveLocal();
 
       photoCountPill.textContent = `📷 ${photoCount}枚`;
-      cooldownPill.textContent = `🔒 8秒待機`;
+      cooldownPill.textContent = `🔒 4秒待機`;
 
-      const div = document.createElement('div');
-      div.className = 'log-item photo-marker';
-      div.innerHTML = `<span>📷 写真 #${photoCount}（${reason}）</span><span class="time">${t}</span>`;
-      insertLogElement(div);
+      renderStreamList();
     }
 
-    function insertLogElement(el) {
-      if (interimEl && interimEl.parentNode === streamList) {
-        streamList.insertBefore(el, interimEl);
+    function renderStreamList() {
+      const prevInterimText = interimEl ? interimEl.textContent : '';
+      streamList.innerHTML = '';
+
+      if (entries.length === 0) {
+        streamList.innerHTML = '<div class="log-item">v4適用済み：「カシャッ」で撮影（合図文字は非表示）／写真と写真の間はひとまとまり／待機4秒。</div>';
       } else {
-        streamList.appendChild(el);
+        for (const item of entries) {
+          const div = document.createElement('div');
+          if (item.type === 'photo') {
+            div.className = 'log-item photo-marker';
+            div.innerHTML = `<span>📷 写真 #${item.num} を撮影</span><span class="time">${item.time}</span>`;
+          } else if (item.type === 'segment_text') {
+            div.className = 'log-item';
+            div.innerHTML = `<span class="time">${item.time}〜</span>${escapeHtml(item.text)}`;
+          }
+          streamList.appendChild(div);
+        }
+      }
+
+      if (interimEl && prevInterimText) {
+        interimEl.textContent = prevInterimText;
+        streamList.appendChild(interimEl);
       }
       streamList.scrollTop = streamList.scrollHeight;
-    }
-
-    function appendTextLog(text) {
-      const clean = text.trim();
-      if (!clean) return;
-      const t = nowStr();
-      entries.push({ id: Date.now() + Math.random(), type: 'text', time: t, text: clean });
-      saveLocal();
-
-      const div = document.createElement('div');
-      div.className = 'log-item';
-      div.innerHTML = `<span class="time">${t}</span>${escapeHtml(clean)}`;
-      insertLogElement(div);
     }
 
     function setupSpeech() {
@@ -507,23 +553,15 @@
 
     function handleFinalPhrase(text) {
       const triggers = getTriggerList();
-      let matchedWord = null;
+      const hasTrigger = triggers.some(word => word && text.includes(word));
 
-      for (const word of triggers) {
-        if (text.includes(word)) {
-          matchedWord = word;
-          break;
-        }
+      if (hasTrigger) {
+        // 撮影を実行（合図ワード自体は残さない）
+        takePhoto('カシャッ');
       }
 
-      if (matchedWord) {
-        takePhoto(`「${matchedWord}」`);
-      }
-
-      const cleanedText = text.trim();
-      if (cleanedText) {
-        appendTextLog(cleanedText);
-      }
+      // 合図ワードを除いた本文だけを、現在の写真区間のひとまとまりテキストに追記
+      appendContinuousText(text);
     }
 
     startStopBtn.addEventListener('click', async () => {
@@ -569,24 +607,29 @@
 
     function buildManualBlocks() {
       const blocks = [];
-      let currentBlock = { title: '導入メモ（撮影前）', time: '', image: null, texts: [] };
+      let currentBlock = { title: '導入メモ（撮影前）', time: '', image: null, text: '' };
 
       for (const item of entries) {
         if (item.type === 'photo') {
-          if (currentBlock.image || currentBlock.texts.length > 0) {
+          if (currentBlock.image || currentBlock.text.trim()) {
             blocks.push(currentBlock);
           }
           currentBlock = {
             title: `ステップ ${item.num}`,
             time: item.time,
             image: item.image,
-            texts: []
+            text: ''
           };
-        } else if (item.type === 'text') {
-          currentBlock.texts.push(item.text);
+        } else if (item.type === 'segment_text') {
+          if (!currentBlock.time && item.time) currentBlock.time = item.time;
+          if (item.text) {
+            currentBlock.text = currentBlock.text
+              ? `${currentBlock.text}、${item.text}`
+              : item.text;
+          }
         }
       }
-      if (currentBlock.image || currentBlock.texts.length > 0) {
+      if (currentBlock.image || currentBlock.text.trim()) {
         blocks.push(currentBlock);
       }
       return blocks;
@@ -612,11 +655,11 @@
           : '';
         card.innerHTML = `
           <div class="card-header">
-            <span>${escapeHtml(b.title)} ${b.time ? `(${b.time})` : ''}</span>
+            <span>${escapeHtml(b.title)} ${b.time ? `(撮影 ${b.time})` : ''}</span>
             <span>#${idx + 1}</span>
           </div>
           ${imgHtml}
-          <textarea data-block="${idx}" placeholder="音声コメントがここに入ります（手修正も可能）">${escapeHtml(b.texts.join('\n'))}</textarea>
+          <textarea data-block="${idx}" placeholder="写真と写真の間の音声コメントがひとまとまりで入ります">${escapeHtml(b.text)}</textarea>
         `;
         reviewList.appendChild(card);
       });
@@ -639,8 +682,8 @@
 
       let bodyHtml = `<h1>作業記録・マニュアル (${escapeHtml(dateStr)})</h1>`;
       blocks.forEach((b, idx) => {
-        const comment = (textareas[idx] ? textareas[idx].value.trim() : b.texts.join('\n')) || '（コメントなし）';
-        bodyHtml += `<h2>${escapeHtml(b.title)} ${b.time ? `[${escapeHtml(b.time)}]` : ''}</h2>`;
+        const comment = (textareas[idx] ? textareas[idx].value.trim() : b.text) || '（コメントなし）';
+        bodyHtml += `<h2>${escapeHtml(b.title)} ${b.time ? `[撮影 ${escapeHtml(b.time)}]` : ''}</h2>`;
         if (b.image) {
           bodyHtml += `<p><img src="${b.image}" style="max-width:480px;width:100%;height:auto;" /></p>`;
         }
@@ -666,29 +709,30 @@
       let md = `# 作業記録・マニュアル (${new Date().toLocaleDateString('ja-JP')})\n\n`;
 
       blocks.forEach((b, idx) => {
-        const editedText = textareas[idx] ? textareas[idx].value.trim() : b.texts.join('\n');
-        md += `## ${b.title} ${b.time ? `[${b.time}]` : ''}\n`;
+        const editedText = textareas[idx] ? textareas[idx].value.trim() : b.text;
+        md += `## ${b.title} ${b.time ? `[撮影 ${b.time}]` : ''}\n`;
         if (b.image) md += `[写真あり]\n`;
         md += `${editedText || '（コメントなし）'}\n\n`;
       });
 
       await navigator.clipboard.writeText(md);
-      alert('テキストをクリップボードにコピーしました！');
+      alert('ひとまとまりのテキストをコピーしました！');
     });
 
     document.getElementById('clearAllBtn').addEventListener('click', () => {
       if (!confirm('記録した写真と音声ログをすべて消去しますか？')) return;
       entries = [];
       photoCount = 0;
+      localStorage.removeItem('voice_cam_proto_v4');
       localStorage.removeItem('voice_cam_proto_v1');
       photoCountPill.textContent = '📷 0枚';
-      streamList.innerHTML = '<div class="log-item">ログをリセットしました。</div>';
+      renderStreamList();
       renderReview();
     });
 
     function saveLocal() {
       try {
-        localStorage.setItem('voice_cam_proto_v1', JSON.stringify({ entries, photoCount }));
+        localStorage.setItem('voice_cam_proto_v4', JSON.stringify({ entries, photoCount }));
       } catch (e) {
         console.warn('容量上限のため一部保存スキップ:', e);
       }
@@ -696,27 +740,13 @@
 
     function loadLocal() {
       try {
-        const raw = localStorage.getItem('voice_cam_proto_v1');
+        const raw = localStorage.getItem('voice_cam_proto_v4');
         if (!raw) return;
         const parsed = JSON.parse(raw);
         entries = parsed.entries || [];
         photoCount = parsed.photoCount || 0;
         photoCountPill.textContent = `📷 ${photoCount}枚`;
-
-        if (entries.length > 0) {
-          streamList.innerHTML = '';
-          entries.forEach(item => {
-            const div = document.createElement('div');
-            if (item.type === 'photo') {
-              div.className = 'log-item photo-marker';
-              div.innerHTML = `<span>📷 写真 #${item.num}</span><span class="time">${item.time}</span>`;
-            } else {
-              div.className = 'log-item';
-              div.innerHTML = `<span class="time">${item.time}</span>${escapeHtml(item.text)}`;
-            }
-            streamList.appendChild(div);
-          });
-        }
+        renderStreamList();
       } catch (_) {}
     }
 
